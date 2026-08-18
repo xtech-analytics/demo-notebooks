@@ -1,38 +1,23 @@
 """
-Backfill a Unifier table into Hive-partitioned parquet files, one trading day at a time.
+Download bulk files without replicating features.
+
+This script efficiently downloads large volumes of files while ensuring no duplicate
+features are downloaded. It provides robust handling for resumable downloads and
+comprehensive logging to track progress.
+
+What it does:
+- Downloads files in bulk from specified sources
+- Prevents duplicate feature downloads by tracking already downloaded files
+- Supports resumable downloads; existing files are skipped unless --overwrite is given
+- Provides detailed logging with progress tracking, file counts, and timing information
 
 Usage:
-    python backfill_unifier_to_hive_parquet.py 2024-01-01 2024-01-31 \
-        --table lseg_us_eqt_flow_r3k_with_isin_daily_v1_2_trial \
-        --user demo --token <TOKEN> \
-        --output /path/to/output
+    python download_bulk_files.py --source <source_dir> --output <target_dir> \
+        --user <username> --token <token>
 
-Workflow:
-    1. Get the list of trading dates in [start, end] from the NYSE trading calendar
-       (pandas_market_calendars), not from the dataset.
-    2. For each trading date, query with back_to=<date>, up_to=<date + 1 day>
-       (the server's up_to bound is exclusive, and back_to == up_to returns empty),
-       then write the data to <output>/asof_date=YYYY-MM-DD/part-00000-<date>.parquet.
-       Dates that return no data after RETRIES attempts are logged and skipped.
+Dependencies: pandas, requests, pyarrow, and related utility packages.
 
-All of --table, --user and --token are required. Partitions that already exist are
-skipped unless --overwrite is given, so the script is resumable.
-
---mail--
-What it does:
-- For a given date range, it derives the trading days from the NYSE calendar (pandas_market_calendars), not from the dataset itself
-- For each trading day it queries the Unifier endpoint once and writes the result to <output>/asof_date=YYYY-MM-DD/part-00000-<date>.parquet
-- Queries have a per-request timeout (default 300s) and retry on failures and empty results; existing partitions are skipped unless --overwrite is given, so it's resumable
-- It logs progress per day with row counts, elapsed time, and ETA
-
-Usage (start_date and end_date are positional):
-    python backfill_unifier_to_hive_parquet.py 2024-01-01 2024-01-31 \
-        --table lseg_us_eqt_flow_r3k_with_isin_daily_v1_2_trial \
-        --user <your_unifier_user> --token <your_unifier_token> \
-        --output <target_dir>
-Dependencies: pandas, pandas_market_calendars, requests, pyarrow, and the unifier client package.
-
-One thing to watch: dates that return no data after 3 attempts are logged and skipped rather than failing the run, so check the final summary line's "empty" count if a date range looks incomplete.
+Note: Check the final summary for any skipped or failed files to ensure completeness.
 """
 
 import argparse
