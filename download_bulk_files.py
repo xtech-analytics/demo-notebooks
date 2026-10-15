@@ -175,8 +175,58 @@ def get_trading_dates(start_date: date, end_date: date) -> list[str]:
     return trading_dates
 
 
+NULL_TOKENS = {"nan", "none", "null", ""}
+
+
+def clean_mixed_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Make object columns parquet-safe.
+
+    The Unifier JSON response sometimes sends missing numbers as the string "NaN" (or
+    "None"/"null") inside an otherwise numeric column, e.g. method4_inst_buy. pyarrow
+    cannot write such a mixed str/float column, so:
+    - NaN-like strings are turned into real nulls in every object column;
+    - a column whose remaining values are real numbers is converted to a numeric dtype;
+    - any other column that still mixes types is stored as strings.
+    Pure string columns (tickers, ISINs, CUSIPs) are left as-is, so leading zeros survive.
+    """
+    for col in df.columns:
+        if not (
+            pd.api.types.is_object_dtype(df[col])
+            or pd.api.types.is_string_dtype(df[col])
+        ):
+            continue
+        series = df[col].astype(object).map(
+            lambda v: None
+            if isinstance(v, str) and v.strip().lower() in NULL_TOKENS
+            else v
+        )
+        non_null = series.dropna()
+        if non_null.empty:
+            df[col] = pd.to_numeric(series, errors="coerce")
+            continue
+        types = {type(v) for v in non_null}
+        if types <= {int, float, bool} and types != {bool}:
+            df[col] = pd.to_numeric(series, errors="coerce")
+        elif len(types) > 1:
+            numeric = pd.to_numeric(series, errors="coerce")
+            if numeric.notna().sum() == len(non_null) and any(
+                not isinstance(v, str) for v in non_null
+            ):
+                df[col] = numeric
+            else:
+                logger.warning(
+                    "Column %s has mixed types %s; saving it as string",
+                    col,
+                    sorted(t.__name__ for t in types),
+                )
+                df[col] = series.map(lambda v: None if v is None else str(v))
+        else:
+            df[col] = series
+    return df
+
+
 def save_partition(df: pd.DataFrame, output_dir: Path, asof_date: str) -> Path:
-    df = df.copy()
+    df = clean_mixed_columns(df.copy())
     if "asof_date" in df.columns:
         df["asof_date"] = df["asof_date"].astype(str)
     else:
@@ -246,7 +296,9 @@ def main() -> None:
     run_started_at = started_at
     for i, day in enumerate(dates, start=1):
         partition_dir = output_dir / f"asof_date={day}"
-        if partition_dir.exists() and not args.overwrite:
+        # A failed save can leave an empty partition folder behind, so only skip
+        # when a parquet file is actually there.
+        if any(partition_dir.glob("*.parquet")) and not args.overwrite:
             logger.info(
                 "[%d/%d] %s: partition already exists, skipping", i, len(dates), day
             )
